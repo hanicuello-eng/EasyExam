@@ -1,4 +1,23 @@
 // ==========================================
+// CONFIGURACIÓN DE FIREBASE
+// ==========================================
+const firebaseConfig = {
+  apiKey: "AIzaSyCMJw-RRlccuF5cP9IgPtZaO5LCP1cPIRs",
+  authDomain: "easyexam-2d83e.firebaseapp.com",
+  databaseURL: "https://easyexam-2d83e-default-rtdb.firebaseio.com",
+  projectId: "easyexam-2d83e",
+  storageBucket: "easyexam-2d83e.firebasestorage.app",
+  messagingSenderId: "203972027709",
+  appId: "1:203972027709:web:faf42affd8dc8b67b81154"
+};
+
+// Inicializar Firebase
+if (!firebase.apps.length) {
+  firebase.initializeApp(firebaseConfig);
+}
+const database = firebase.database();
+
+// ==========================================
 // ESTADO GLOBAL DE LA APLICACIÓN
 // ==========================================
 let examsBank = [];              
@@ -44,21 +63,20 @@ window.addEventListener('DOMContentLoaded', () => {
     try { registeredGroups = JSON.parse(savedGroups); } catch (e) {}
   }
 
-  const savedHistory = localStorage.getItem('evaluation_history');
-  if (savedHistory) {
-    try { evaluationHistory = JSON.parse(savedHistory); } catch (e) {}
-  }
+  // Escuchar historial de Firebase en tiempo real
+  listenToHistoryFromFirebase();
 
   const urlParams = new URLSearchParams(window.location.search);
   const mode = urlParams.get('mode');
   const sharedExamId = urlParams.get('examId');
+  const sharedData = urlParams.get('data');
 
   const loginMod = document.getElementById('loginModule');
   const teacherMod = document.getElementById('teacherModule');
   const studentMod = document.getElementById('studentModule');
 
   // Modo Estudiante mediante enlace directo
-  if (mode === 'student' || sharedExamId) {
+  if (mode === 'student') {
     if (loginMod) loginMod.style.display = 'none';
     if (teacherMod) teacherMod.style.display = 'none';
     if (studentMod) {
@@ -66,11 +84,27 @@ window.addEventListener('DOMContentLoaded', () => {
       studentMod.style.display = 'block';
     }
 
-    const targetExam = examsBank.find(e => e.id === parseInt(sharedExamId));
+    let targetExam = null;
+
+    // Prioridad 1: Decodificar el examen directamente desde la URL (Soporte multi-dispositivo)
+    if (sharedData) {
+      try {
+        const decodedJson = decodeURIComponent(escape(atob(decodeURIComponent(sharedData))));
+        targetExam = JSON.parse(decodedJson);
+      } catch (e) {
+        console.error("Error al decodificar el examen:", e);
+      }
+    }
+
+    // Prioridad 2: Buscar en la memoria del dispositivo si no vinieron datos
+    if (!targetExam && sharedExamId) {
+      targetExam = examsBank.find(e => e.id === parseInt(sharedExamId));
+    }
+
     if (targetExam) {
       setTimeout(() => startStudentExam(targetExam), 200);
     } else {
-      alert('El examen solicitado no se encuentra registrado en este dispositivo.');
+      alert('El examen solicitado no se encuentra disponible o el enlace es inválido.');
     }
   } else {
     // Modo Docente: Validar sesión iniciada
@@ -127,8 +161,22 @@ function saveGroupsToStorage() {
   localStorage.setItem('registered_groups', JSON.stringify(registeredGroups));
 }
 
-function saveHistoryToStorage() {
-  localStorage.setItem('evaluation_history', JSON.stringify(evaluationHistory));
+// Escuchar cambios en Firebase en tiempo real
+function listenToHistoryFromFirebase() {
+  database.ref("respuestas").on("value", (snapshot) => {
+    const data = snapshot.val();
+    evaluationHistory = [];
+    
+    if (data) {
+      Object.keys(data).forEach((key) => {
+        evaluationHistory.push({ firebaseKey: key, ...data[key] });
+      });
+    }
+
+    const select = document.getElementById('historyExamFilter');
+    if (select) renderHistoryTable();
+    renderExamsBank();
+  });
 }
 
 // ==========================================
@@ -184,6 +232,7 @@ function updateProfile() {
   teacherProfile.bio = bio;
 
   localStorage.setItem('prof_profile', JSON.stringify(teacherProfile));
+  alert('Perfil actualizado con éxito.');
 }
 
 document.getElementById('avatarInput')?.addEventListener('change', function (e) {
@@ -503,7 +552,10 @@ function renderExamsBank() {
     const card = document.createElement('div');
     card.style.cssText = 'background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 12px;';
 
-    const studentShareUrl = `${window.location.origin}${window.location.pathname}?mode=student&examId=${exam.id}`;
+    // Generar enlace auto-contenido codificado en Base64
+    const encodedData = encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(exam)))));
+    const studentShareUrl = `${window.location.origin}${window.location.pathname}?mode=student&data=${encodedData}`;
+
     const submissionCount = evaluationHistory.filter(h => h.examId === exam.id).length;
     const groupTag = exam.group ? `👥 Grupo: <strong>${exam.group}</strong> | ` : '';
 
@@ -578,7 +630,7 @@ function renderHistoryTable() {
 
   let html = `
     <div style="margin-bottom: 12px; font-size: 0.9rem; color: var(--text-muted);">
-      Mostrando <strong>${filteredHistory.length}</strong> entregas registradas.
+      Mostrando <strong>${filteredHistory.length}</strong> entregas registradas en la nube.
     </div>
     <div style="overflow-x: auto;">
       <table style="width:100%; border-collapse:collapse; font-size:0.9rem; text-align:left;">
@@ -630,7 +682,7 @@ function startStudentExam(exam) {
   
   if (!nameInput || nameInput.trim() === '') {
     alert('El nombre es obligatorio.');
-    if (window.location.search.includes('examId')) {
+    if (window.location.search.includes('mode=student')) {
       window.location.href = window.location.pathname;
     }
     return;
@@ -721,7 +773,7 @@ function renderPreviewQuestions(exam) {
 }
 
 // ==========================================
-// 7. ENVÍO Y CALIFICACIÓN
+// 7. ENVÍO Y CALIFICACIÓN (GUARDA EN FIREBASE)
 // ==========================================
 document.getElementById('previewExamForm')?.addEventListener('submit', function (e) {
   e.preventDefault();
@@ -781,7 +833,6 @@ document.getElementById('previewExamForm')?.addEventListener('submit', function 
   const finalGrade = maxPossibleScore > 0 ? ((totalScoreEarned / maxPossibleScore) * 5.0).toFixed(2) : '0.00';
 
   const resultRecord = {
-    id: Date.now(),
     examId: activeExamForPreview.id,
     estudiante: studentName,
     grupo: activeExamForPreview.group || 'N/A',
@@ -795,8 +846,14 @@ document.getElementById('previewExamForm')?.addEventListener('submit', function 
     detalles: responsesLog
   };
 
-  evaluationHistory.push(resultRecord);
-  saveHistoryToStorage();
+  // Guardar en Firebase Realtime Database
+  database.ref("respuestas").push(resultRecord)
+    .then(() => {
+      console.log("¡Respuesta enviada con éxito a Firebase!");
+    })
+    .catch((err) => {
+      console.error("Error al guardar en Firebase:", err);
+    });
 
   const scoreDetails = document.getElementById('scoreDetails');
   scoreDetails.innerHTML = `
@@ -837,25 +894,27 @@ function exportToExcel() {
   const rows = [];
 
   filteredHistory.forEach(record => {
-    record.detalles.forEach((item, index) => {
-      rows.push({
-        'Estudiante': record.estudiante,
-        'Grupo': record.grupo || 'N/A',
-        'Examen': record.examenTitle,
-        'Fecha / Hora': record.fecha,
-        '# Pregunta': index + 1,
-        'Pregunta': item.pregunta,
-        'Tipo': item.tipo,
-        'Respuesta Estudiante': item.respuestaDada,
-        'Estado': item.estado,
-        'Puntos Obtenidos': item.puntosObtenidos,
-        'Puntos Posibles': item.puntosPosibles,
-        'Opción Correcta': item.opcionCorrecta,
-        'Nota Final (0-5)': record.notaFinal,
-        'Intentos de Salida': record.intentosSalida,
-        'Tiempo Empleado': record.tiempoEmpleado
+    if (record.detalles && Array.isArray(record.detalles)) {
+      record.detalles.forEach((item, index) => {
+        rows.push({
+          'Estudiante': record.estudiante,
+          'Grupo': record.grupo || 'N/A',
+          'Examen': record.examenTitle,
+          'Fecha / Hora': record.fecha,
+          '# Pregunta': index + 1,
+          'Pregunta': item.pregunta,
+          'Tipo': item.tipo,
+          'Respuesta Estudiante': item.respuestaDada,
+          'Estado': item.estado,
+          'Puntos Obtenidos': item.puntosObtenidos,
+          'Puntos Posibles': item.puntosPosibles,
+          'Opción Correcta': item.opcionCorrecta,
+          'Nota Final (0-5)': record.notaFinal,
+          'Intentos de Salida': record.intentosSalida,
+          'Tiempo Empleado': record.tiempoEmpleado
+        });
       });
-    });
+    }
   });
 
   const worksheet = XLSX.utils.json_to_sheet(rows);
